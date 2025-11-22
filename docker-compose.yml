@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  rfp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - RFP_API_AWS_REGION=us-east-1
+      - RFP_API_AWS_ENVIRONMENT=dev
+      - RFP_API_AWS_PROJECT_PREFIX=l3harris-qhan
+    networks:
+      - rfp-network
+    depends_on:
+      - localstack
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # LocalStack for local AWS services development
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,dynamodb,lambda,sqs
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "/tmp/localstack:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - rfp-network
+    restart: unless-stopped
+
+  # Optional: DynamoDB Admin UI
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin
+    ports:
+      - "8001:8001"
+    environment:
+      - DYNAMO_ENDPOINT=http://localstack:4566
+    depends_on:
+      - localstack
+    networks:
+      - rfp-network
+    restart: unless-stopped
+
+networks:
+  rfp-network:
+    driver: bridge

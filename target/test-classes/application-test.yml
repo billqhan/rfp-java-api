@@ -1,0 +1,27 @@
+# Test Configuration
+spring:
+  application:
+    name: rfp-response-agent-api-test
+  
+logging:
+  level:
+    com.l3harris.rfp: DEBUG
+    org.springframework: WARN
+
+# Test AWS Configuration
+rfp:
+  api:
+    aws:
+      region: us-east-1
+      environment: test
+      project-prefix: test-prefix
+    processing:
+      match-threshold: 0.5
+      max-results: 10
+      enable-knowledge-base: false
+      company-name: Test Company
+      timeout: 5000
+    storage:
+      enable-local-storage: true
+      enable-cloud-storage: false
+      fallback-strategy: local
