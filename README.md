@@ -1,3 +1,4 @@
+[![CI/CD](https://github.com/billqhan/rfp-java-api/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/billqhan/rfp-java-api/actions)
 # RFP Response Agent Java REST API
 
 A Java Spring Boot REST API service that provides comprehensive endpoints for the RFP Response Agent platform, mirroring the functionality of the existing Lambda-based API but with enhanced features and enterprise-grade capabilities.
