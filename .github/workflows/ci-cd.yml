@@ -1,11 +1,13 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline (EKS - DISABLED)
 
+# EKS workflow disabled - using ECS deployment (ci-cd-ecs.yml)
+# To re-enable: uncomment the 'on:' section below
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
   workflow_dispatch:
+  # push:
+  #   branches: [ main, develop ]
+  # pull_request:
+  #   branches: [ main, develop ]
 
 env:
   JAVA_VERSION: '17'
@@ -149,7 +151,8 @@ jobs:
 
       - name: Deploy with Helm
         run: |
-          IMAGE_TAG="${GITHUB_REF#refs/heads/}-${GITHUB_SHA::7}"
+          # Use full branch-sha tag produced by docker/metadata-action (type=sha,prefix={{branch}}-)
+          IMAGE_TAG="${GITHUB_REF_NAME}-${GITHUB_SHA}"
           
           helm upgrade --install rfp-java-api \
             oci://${{ secrets.ECR_REGISTRY }}/rfp-java-api-helm \
@@ -198,7 +201,8 @@ jobs:
 
       - name: Deploy with Helm
         run: |
-          IMAGE_TAG="${GITHUB_SHA::7}"
+          # Use full main-sha tag produced by docker/metadata-action (type=sha,prefix={{branch}}-)
+          IMAGE_TAG="main-${GITHUB_SHA}"
           
           helm upgrade --install rfp-java-api \
             oci://${{ secrets.ECR_REGISTRY }}/rfp-java-api-helm \

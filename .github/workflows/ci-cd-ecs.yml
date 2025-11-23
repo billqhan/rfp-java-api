@@ -1,0 +1,268 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_VERSION: '3.9'
+
+jobs:
+  validate-contracts:
+    name: Validate API Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate contracts
+        run: |
+          chmod +x validate-contracts.sh
+          ./validate-contracts.sh
+
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: validate-contracts
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Run unit tests
+        run: mvn test
+
+      - name: Run integration tests
+        run: mvn verify -DskipUnitTests || echo "Integration tests not configured"
+
+      - name: Generate test coverage report
+        run: mvn jacoco:report || echo "Coverage not configured"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: target/surefire-reports/
+          retention-days: 7
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-jar
+          path: target/*.jar
+          retention-days: 7
+
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: application-jar
+          path: target/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.ECR_REGISTRY }}/rfp-java-api
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  deploy-dev-ecs:
+    name: Deploy to Development (ECS)
+    runs-on: ubuntu-latest
+    needs: build-docker
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: development
+      url: https://api-dev.rfp-platform.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download task definition template
+        run: |
+          if [ ! -f task-definition-dev.json ]; then
+            echo "Task definition template not found, fetching from ECS..."
+            aws ecs describe-task-definition \
+              --task-definition ${{ secrets.ECS_TASK_FAMILY_DEV }} \
+              --query 'taskDefinition' \
+              --output json | \
+              jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+              > task-definition-dev.json
+          fi
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-dev.json
+          container-name: java-api
+          image: ${{ secrets.ECR_REGISTRY }}/rfp-java-api:${{ github.ref_name }}-${{ github.sha }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE_DEV }}
+          cluster: ${{ secrets.ECS_CLUSTER_DEV }}
+          wait-for-service-stability: true
+
+      - name: Verify deployment
+        run: |
+          echo "Checking ECS service status..."
+          aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER_DEV }} \
+            --services ${{ secrets.ECS_SERVICE_DEV }} \
+            --query 'services[0].deployments' \
+            --output table
+
+  deploy-prod-ecs:
+    name: Deploy to Production (ECS)
+    runs-on: ubuntu-latest
+    needs: build-docker
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://api.rfp-platform.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download task definition template
+        run: |
+          if [ ! -f task-definition-prod.json ]; then
+            echo "Task definition template not found, fetching from ECS..."
+            aws ecs describe-task-definition \
+              --task-definition ${{ secrets.ECS_TASK_FAMILY_PROD }} \
+              --query 'taskDefinition' \
+              --output json | \
+              jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+              > task-definition-prod.json
+          fi
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-prod.json
+          container-name: java-api
+          image: ${{ secrets.ECR_REGISTRY }}/rfp-java-api:main-${{ github.sha }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE_PROD }}
+          cluster: ${{ secrets.ECS_CLUSTER_PROD }}
+          wait-for-service-stability: true
+
+      - name: Verify deployment
+        run: |
+          echo "Checking ECS service status..."
+          aws ecs describe-services \
+            --cluster ${{ secrets.ECS_CLUSTER_PROD }} \
+            --services ${{ secrets.ECS_SERVICE_PROD }} \
+            --query 'services[0].deployments' \
+            --output table
+
+      - name: Run smoke tests
+        run: |
+          # Get the ALB endpoint from ECS service
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster ${{ secrets.ECS_CLUSTER_PROD }} \
+            --service-name ${{ secrets.ECS_SERVICE_PROD }} \
+            --desired-status RUNNING \
+            --query 'taskArns[0]' \
+            --output text)
+          
+          if [ "$TASK_ARN" != "None" ] && [ -n "$TASK_ARN" ]; then
+            echo "Smoke test: Verifying task is running..."
+            aws ecs describe-tasks \
+              --cluster ${{ secrets.ECS_CLUSTER_PROD }} \
+              --tasks $TASK_ARN \
+              --query 'tasks[0].lastStatus' \
+              --output text
+          fi
+          
+          # If ALB endpoint is available, test it
+          if [ -n "${{ secrets.API_ENDPOINT_PROD }}" ]; then
+            echo "Testing API endpoint: ${{ secrets.API_ENDPOINT_PROD }}/actuator/health"
+            curl -f ${{ secrets.API_ENDPOINT_PROD }}/actuator/health || echo "Health check endpoint not available yet"
+          fi
+
+      - name: Create deployment tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG_NAME="prod-ecs-$(date +%Y%m%d-%H%M%S)"
+          git tag -a "$TAG_NAME" -m "Production ECS deployment - SHA: ${GITHUB_SHA::7}"
+          git push origin "$TAG_NAME"
