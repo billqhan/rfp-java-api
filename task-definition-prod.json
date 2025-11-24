@@ -8,12 +8,12 @@
     "cpuArchitecture": "X86_64",
     "operatingSystemFamily": "LINUX"
   },
-  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskRole",
+  "executionRoleArn": "arn:aws:iam::160936122037:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::160936122037:role/ecsTaskRole",
   "containerDefinitions": [
     {
       "name": "java-api",
-      "image": "YOUR_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/rfp-java-api:latest",
+      "image": "160936122037.dkr.ecr.us-east-1.amazonaws.com/rfp-java-api:latest",
       "portMappings": [
         {
           "containerPort": 8080,
