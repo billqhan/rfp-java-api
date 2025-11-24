@@ -13,7 +13,7 @@
   "containerDefinitions": [
     {
       "name": "java-api",
-      "image": "160936122037.dkr.ecr.us-east-1.amazonaws.com/rfp-java-api:latest",
+      "image": "160936122037.dkr.ecr.us-east-1.amazonaws.com/dev-rfp-java-api:latest",
       "portMappings": [
         {
           "containerPort": 8080,

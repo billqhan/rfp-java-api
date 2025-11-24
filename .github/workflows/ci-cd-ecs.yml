@@ -10,6 +10,8 @@ on:
 env:
   JAVA_VERSION: '17'
   MAVEN_VERSION: '3.9'
+  ECR_REPOSITORY_DEV: 'dev-rfp-java-api'
+  ECR_REPOSITORY_PROD: 'prod-rfp-java-api'
 
 jobs:
   validate-contracts:
@@ -104,7 +106,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.ECR_REGISTRY }}/rfp-java-api
+          images: ${{ secrets.ECR_REGISTRY }}/${{ github.ref == 'refs/heads/main' && env.ECR_REPOSITORY_PROD || env.ECR_REPOSITORY_DEV }}
           tags: |
             type=ref,event=branch
             type=sha,prefix={{branch}}-
@@ -159,7 +161,7 @@ jobs:
         with:
           task-definition: task-definition-dev.json
           container-name: java-api
-          image: ${{ secrets.ECR_REGISTRY }}/rfp-java-api:${{ github.ref_name }}-${{ github.sha }}
+          image: ${{ secrets.ECR_REGISTRY }}/${{ github.ref == 'refs/heads/main' && env.ECR_REPOSITORY_PROD || env.ECR_REPOSITORY_DEV }}:${{ github.ref_name }}-${{ github.sha }}
 
       - name: Deploy Amazon ECS task definition
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
