@@ -1,7 +1,8 @@
 [![CI/CD](https://github.com/billqhan/rfp-java-api/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/billqhan/rfp-java-api/actions)
-# RFP Response Agent Java REST API
 
-A Java Spring Boot REST API service that provides comprehensive endpoints for the RFP Response Agent platform, mirroring the functionality of the existing Lambda-based API but with enhanced features and enterprise-grade capabilities.
+# RFP Java API
+
+A Java Spring Boot REST API service for the RFP Response Platform, providing endpoints for opportunity management, proposals, and workflows.
 
 ## 🚀 Features
 
@@ -21,41 +22,56 @@ A Java Spring Boot REST API service that provides comprehensive endpoints for th
 - **Metrics**: Prometheus-compatible metrics export
 - **Logging**: Structured logging with configurable levels
 
+## 🚀 Quick Start - Automated Deployment
+
+The easiest way to deploy this service is via the complete platform deployment:
+
+```bash
+# From rfp-infrastructure directory
+cd ../rfp-infrastructure
+./scripts/deploy-complete.sh dev
+```
+
+This will automatically:
+1. Build the Docker container (multi-architecture)
+2. Push to Amazon ECR
+3. Create/update ECS service on Fargate
+4. Integrate with Application Load Balancer
+5. Configure health checks
+
 ## 📋 Prerequisites
 
-- Java 17 or higher
-- Maven 3.8+
-- Docker (optional, for containerized deployment)
-- AWS CLI configured (for AWS service access)
+- **Java 21**
+- **Maven 3.9+**
+- **Docker** (for containerized deployment)
+- **AWS CLI** configured with appropriate credentials
 
-## 🛠️ Quick Start
+## 🛠️ Local Development
 
-### Local Development
+### Build and Run Locally
 
-1. **Clone and navigate to the project**:
-   ```bash
-   cd java-api
-   ```
+```bash
+# Build the application
+mvn clean compile
 
-2. **Build the application**:
-   ```bash
-   mvn clean compile
-   ```
+# Run with Spring Boot
+mvn spring-boot:run
+```
 
-3. **Run the application**:
-   ```bash
-   mvn spring-boot:run
-   - Health check: http://localhost:8080/api/health
-   - Swagger UI: http://localhost:8080/api/swagger-ui.html (if enabled)
+Access at:
+- Health check: http://localhost:8080/api/actuator/health
+- API endpoints: http://localhost:8080/api/*
 
-   ```bash
-   docker-compose up --build
-   ```
+### Docker Compose (with LocalStack)
 
-2. **Access services**:
-   - API: http://localhost:8080/api
-   - LocalStack (AWS services): http://localhost:4566
-   - DynamoDB Admin: http://localhost:8001
+```bash
+docker-compose up --build
+```
+
+Services:
+- API: http://localhost:8080/api
+- LocalStack: http://localhost:4566
+- DynamoDB Admin: http://localhost:8001
 
 ## 📖 API Documentation
 
@@ -132,93 +148,58 @@ rfp:
 
 ## 🚀 Deployment
 
-### Local Deployment
-```bash
-# Build JAR
-mvn clean package
+### Automated Deployment (Recommended)
 
-# Run JAR
-java -jar target/rfp-response-agent-api-*.jar
+The service is deployed automatically via `deploy-complete.sh` from the rfp-infrastructure repo:
+
+```bash
+cd ../rfp-infrastructure
+./scripts/deploy-complete.sh dev
 ```
 
-### Docker Deployment
-```bash
-# Build image
-docker build -t l3harris/rfp-response-agent-api:1.0.0 .
+This handles:
+- Multi-architecture Docker build (linux/amd64, linux/arm64)
+- ECR repository creation and image push
+- ECS Fargate service creation/update
+- ALB integration with target groups
+- Health check configuration
 
-# Run container
-docker run -p 8080:8080 l3harris/rfp-response-agent-api:1.0.0
+### Manual ECS Deployment
+
+If you need to deploy independently:
+
+```bash
+# Deploy ECS service only
+./deploy-ecs.sh
 ```
 
-### AWS Deployment Options
-1. **AWS ECS/Fargate**: Container orchestration
-2. **AWS EKS**: Kubernetes deployment
-3. **AWS Elastic Beanstalk**: Platform-as-a-Service
-4. **AWS EC2**: Direct instance deployment
+The script will:
+1. Build and push multi-arch Docker image to ECR
+2. Register new ECS task definition
+3. Create or update ECS service with ALB integration
+4. Configure health checks on `/api/actuator/health`
 
-### Multi-Architecture Container Builds (Apple Silicon + ECS AMD64)
-
-The ECS service expects an image that includes a linux/amd64 descriptor. When building from an Apple Silicon (arm64) Mac, a single-arch image will cause `CannotPullContainerError: image manifest does not contain a descriptor for platform (linux/amd64)`.
-
-Use the enhanced build script:
+### Build Options
 
 ```bash
-cd java-api
-# Build only the JAR
+# Build JAR only
 ./build.sh
 
-# Build local single-arch Docker image (for local use)
+# Build local Docker image (single architecture)
 ./build.sh --local
 
-# Build & push multi-arch image to ECR (linux/amd64, linux/arm64)
+# Build and push multi-arch image to ECR
 ./build.sh --dockerx --skip-tests
 ```
 
-The multi-arch build script will:
-- Ensure the ECR repo exists (`<BUCKET_PREFIX>-rfp-java-api`)
-- Create / select a `docker buildx` builder named `multiarch`
-- Push a manifest list tagged `:latest`
+### Troubleshooting
 
-ECS Task Definition runtimePlatform (already set in `deploy-complete.sh`):
-```json
-"runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" }
-```
-
-If you temporarily need to force amd64 locally (without multi-arch push):
-```bash
-docker build --platform linux/amd64 -t rfp-api:amd64 .
-```
-
-### ECS Deployment Flow
-
-1. Run: `./deploy-complete.sh java-api`
-2. Script builds & pushes multi-arch image (if not already) and registers new task definition
-3. ECS service is updated with `--force-new-deployment`
-4. Retrieve public IP:
-   ```bash
-   CLUSTER="dev-ecs-cluster" # or ${BUCKET_PREFIX}-ecs-cluster
-   SERVICE="dev-java-api-service" # or ${BUCKET_PREFIX}-java-api-service
-   TASK_ARN=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" --query 'taskArns[0]' --output text)
-   ENI=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
-   aws ec2 describe-network-interfaces --network-interface-ids "$ENI" --query 'NetworkInterfaces[0].Association.PublicIp' --output text
-   ```
-
-### Troubleshooting ECS Pulls
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| CannotPullContainerError (no amd64 descriptor) | Built image only for arm64 | Rebuild with `./build.sh --dockerx` |
-| Stuck in PENDING | No public subnets or security group rules | Ensure assignPublicIp=ENABLED & SG allows 8080/tcp |
-| Health check failing | App not ready or wrong path | Confirm `/api/health` returns 200 |
-| Old task definitions piling up | Frequent deploys | Deregister periodically (script already cleans on request) |
-
-### Hardening / Next Steps (Optional)
-- Add ALB + target group for stable DNS + health routing
-- Add AWS WAF on ALB
-- Externalize config via SSM Parameter Store or Secrets Manager
-- Implement structured JSON logging shipped to CloudWatch Logs Insights
-- Add OpenAPI auto-generation & Swagger UI (if not already enabled)
-- Introduce CI pipeline (GitHub Actions) for build/test/push/deploy
+| Issue | Solution |
+|-------|----------|
+| CannotPullContainerError | Ensure multi-arch build with `./build.sh --dockerx` |
+| Service stuck in PENDING | Check security group allows port 8080 and assignPublicIp=ENABLED |
+| Health check failing | Verify `/api/actuator/health` returns HTTP 200 |
+| ALB 502 errors | Check ECS task is running and security groups allow ALB → Task traffic |
 
 ## 📊 Monitoring & Observability
 
@@ -279,17 +260,14 @@ This Java API seamlessly integrates with the existing Lambda-based architecture:
 3. **Workflow Integration**: Invokes existing Lambda functions for processing steps
 4. **Data Format Compatibility**: Uses the same JSON schemas and data structures
 
-## 📋 Next Steps
+## Architecture
 
-1. **Deploy to AWS**: Set up ECS/EKS deployment
-2. **Add Authentication**: Implement AWS Cognito or OAuth2
-3. **Enhance Monitoring**: Add distributed tracing with X-Ray
-4. **Performance Testing**: Load testing and optimization
-5. **CI/CD Pipeline**: Automated build and deployment pipeline
+- **Runtime**: ECS Fargate with Application Load Balancer
+- **Container**: Multi-arch Docker (linux/amd64, linux/arm64)
+- **Framework**: Spring Boot 3.2.0 with Java 21
+- **AWS Integration**: DynamoDB, S3, Lambda via AWS SDK v2
+- **Monitoring**: Spring Actuator with health endpoints
 
-## 📞 Support
+## License
 
-For questions or issues:
-- Review the existing Lambda API implementation for reference
-- Check AWS CloudWatch logs for deployment issues
-- Refer to Spring Boot documentation for framework-specific questions
+Proprietary - All Rights Reserved
