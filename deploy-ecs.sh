@@ -58,7 +58,8 @@ update_task_definitions() {
 create_ecs_infrastructure() {
     log_info "Step 2: Creating ECS infrastructure..."
     
-    read -p "Enter environment prefix (e.g., 'dev'): " ENV_PREFIX
+    # Use environment variable or default to 'dev'
+    ENV_PREFIX=${ENV_PREFIX:-dev}
     export ENV_PREFIX
     
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -125,32 +126,67 @@ EOF
     VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query 'Vpcs[0].VpcId' --output text)
     SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
     
-    log_info "Creating security group..."
-    SG_ID=$(aws ec2 create-security-group \
-        --group-name ${ENV_PREFIX}-java-api-ecs-sg \
-        --description "Security group for Java API ECS" \
-        --vpc-id $VPC_ID \
-        --query 'GroupId' --output text 2>/dev/null) || \
-        SG_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=group-name,Values=${ENV_PREFIX}-java-api-ecs-sg" \
-            --query 'SecurityGroups[0].GroupId' --output text)
+    log_info "Checking for existing ALB security group..."
+    # Check if ALB-created security group exists (preferred)
+    SG_ID=$(aws ec2 describe-security-groups \
+        --filters "Name=group-name,Values=${ENV_PREFIX}-java-api-task-sg" \
+        --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
     
-    aws ec2 authorize-security-group-ingress \
-        --group-id $SG_ID \
-        --protocol tcp \
-        --port 8080 \
-        --cidr 0.0.0.0/0 2>/dev/null || \
-        log_warning "Security group rule may already exist"
+    if [ -z "$SG_ID" ] || [ "$SG_ID" == "None" ]; then
+        log_info "ALB security group not found, creating new security group..."
+        SG_ID=$(aws ec2 create-security-group \
+            --group-name ${ENV_PREFIX}-java-api-ecs-sg \
+            --description "Security group for Java API ECS" \
+            --vpc-id $VPC_ID \
+            --query 'GroupId' --output text 2>/dev/null) || \
+            SG_ID=$(aws ec2 describe-security-groups \
+                --filters "Name=group-name,Values=${ENV_PREFIX}-java-api-ecs-sg" \
+                --query 'SecurityGroups[0].GroupId' --output text)
+        
+        aws ec2 authorize-security-group-ingress \
+            --group-id $SG_ID \
+            --protocol tcp \
+            --port 8080 \
+            --cidr 0.0.0.0/0 2>/dev/null || \
+            log_warning "Security group rule may already exist"
+    else
+        log_info "Using ALB security group: $SG_ID"
+    fi
+    
+    # Get ALB target group ARN (if ALB exists)
+    log_info "Checking for ALB target group..."
+    TG_ARN=$(aws elbv2 describe-target-groups \
+        --names ${ENV_PREFIX}-java-api-tg \
+        --region $REGION \
+        --query 'TargetGroups[0].TargetGroupArn' \
+        --output text 2>/dev/null || echo "")
     
     log_info "Creating ECS service..."
-    aws ecs create-service \
-        --cluster ${ENV_PREFIX}-ecs-cluster \
-        --service-name ${ENV_PREFIX}-java-api-service \
-        --task-definition ${ENV_PREFIX}-java-api-task \
-        --desired-count 1 \
-        --launch-type FARGATE \
-        --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" 2>/dev/null || \
-        log_warning "Service may already exist"
+    if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+        log_info "ALB target group found, creating service with load balancer integration..."
+        aws ecs create-service \
+            --cluster ${ENV_PREFIX}-ecs-cluster \
+            --service-name ${ENV_PREFIX}-java-api-service \
+            --task-definition ${ENV_PREFIX}-java-api-task \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
+            --load-balancers "targetGroupArn=$TG_ARN,containerName=java-api,containerPort=8080" \
+            --health-check-grace-period-seconds 120 \
+            --region $REGION 2>/dev/null || \
+            log_warning "Service may already exist"
+    else
+        log_info "No ALB target group found, creating service without load balancer..."
+        aws ecs create-service \
+            --cluster ${ENV_PREFIX}-ecs-cluster \
+            --service-name ${ENV_PREFIX}-java-api-service \
+            --task-definition ${ENV_PREFIX}-java-api-task \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
+            --region $REGION 2>/dev/null || \
+            log_warning "Service may already exist"
+    fi
     
     log_success "ECS infrastructure created!"
     
@@ -170,15 +206,21 @@ configure_github_secrets() {
         return
     fi
     
-    read -p "Enter GitHub repository (format: owner/repo): " GITHUB_REPO
+    # Use environment variable or skip if not set
+    if [ -z "$GITHUB_REPO" ]; then
+        log_warning "GITHUB_REPO not set. Skipping GitHub secrets configuration."
+        return
+    fi
     
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
     REGION="us-east-1"
     
     log_info "Setting secrets for $GITHUB_REPO..."
     
-    read -p "AWS Access Key ID: " AWS_ACCESS_KEY_ID
-    read -sp "AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+    if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        log_warning "AWS credentials not set. Skipping GitHub secrets configuration."
+        return
+    fi
     echo
     
     echo "$AWS_ACCESS_KEY_ID" | gh secret set AWS_ACCESS_KEY_ID --repo "$GITHUB_REPO"
@@ -197,6 +239,13 @@ configure_github_secrets() {
 commit_and_deploy() {
     log_info "Step 4: Committing changes..."
     
+    # Skip if AUTO_COMMIT is not set to 'true'
+    if [ "$AUTO_COMMIT" != "true" ]; then
+        log_info "AUTO_COMMIT not enabled. Skipping git operations."
+        log_info "Changes are ready. Review and commit manually if needed."
+        return
+    fi
+    
     git add .github/workflows/ci-cd.yml
     git add .github/workflows/ci-cd-ecs.yml
     git add task-definition-*.json
@@ -205,17 +254,10 @@ commit_and_deploy() {
     
     git status
     
-    read -p "Commit and push changes? (y/n): " CONFIRM
-    if [ "$CONFIRM" = "y" ]; then
-        git commit -m "feat: configure ECS as primary deployment (EKS disabled)"
-        
-        read -p "Push to develop branch? (y/n): " PUSH_CONFIRM
-        if [ "$PUSH_CONFIRM" = "y" ]; then
-            git checkout develop 2>/dev/null || git checkout -b develop
-            git push origin develop
-            log_success "Changes pushed! Check GitHub Actions for deployment status."
-        fi
-    fi
+    git commit -m "feat: configure ECS as primary deployment (EKS disabled)"
+    git checkout develop 2>/dev/null || git checkout -b develop
+    git push origin develop
+    log_success "Changes pushed! Check GitHub Actions for deployment status."
 }
 
 # Main execution
@@ -227,8 +269,8 @@ main() {
     check_prerequisites
     echo ""
     
-    read -p "Run full setup? (y/n): " RUN_FULL
-    if [ "$RUN_FULL" != "y" ]; then
+    # Run all steps automatically unless INTERACTIVE mode is enabled
+    if [ "$INTERACTIVE" = "true" ]; then
         log_info "You can run individual functions:"
         log_info "  update_task_definitions"
         log_info "  create_ecs_infrastructure"
@@ -240,20 +282,20 @@ main() {
     update_task_definitions
     echo ""
     
-    read -p "Create ECS infrastructure? (y/n): " CREATE_INFRA
-    if [ "$CREATE_INFRA" = "y" ]; then
+    # Create ECS infrastructure if CREATE_INFRA is set
+    if [ "$CREATE_INFRA" = "true" ]; then
         create_ecs_infrastructure
         echo ""
     fi
     
-    read -p "Configure GitHub secrets? (y/n): " CONFIG_SECRETS
-    if [ "$CONFIG_SECRETS" = "y" ]; then
+    # Configure GitHub secrets if CONFIG_SECRETS is set
+    if [ "$CONFIG_SECRETS" = "true" ]; then
         configure_github_secrets
         echo ""
     fi
     
-    read -p "Commit and deploy? (y/n): " COMMIT_DEPLOY
-    if [ "$COMMIT_DEPLOY" = "y" ]; then
+    # Commit and deploy if AUTO_COMMIT is set
+    if [ "$AUTO_COMMIT" = "true" ]; then
         commit_and_deploy
         echo ""
     fi
