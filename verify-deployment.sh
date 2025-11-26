@@ -64,16 +64,35 @@ aws ecs describe-services \
 
 # Get task details
 log_info "3. Getting task details..."
-TASK_ARN=$(aws ecs list-tasks \
-    --cluster "$CLUSTER_NAME" \
-    --service-name "$SERVICE_NAME" \
-    --desired-status RUNNING \
-    --region "$REGION" \
-    --query 'taskArns[0]' \
-    --output text)
+
+# Wait up to 3 minutes for tasks to start
+MAX_RETRIES=18
+RETRY_COUNT=0
+TASK_ARN=""
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    TASK_ARN=$(aws ecs list-tasks \
+        --cluster "$CLUSTER_NAME" \
+        --service-name "$SERVICE_NAME" \
+        --desired-status RUNNING \
+        --region "$REGION" \
+        --query 'taskArns[0]' \
+        --output text)
+    
+    if [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ]; then
+        break
+    fi
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+        log_info "Waiting for tasks to start... (${RETRY_COUNT}/${MAX_RETRIES})"
+        sleep 10
+    fi
+done
 
 if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
-    log_error "No running tasks found"
+    log_error "No running tasks found after waiting"
+    log_warning "Service may still be starting. Check ECS console for details."
     exit 1
 fi
 
